@@ -15,9 +15,12 @@ const VideoConference = ({ userId }: { userId: string }) => {
   const connectionsInProgress = useRef(new Set());
   const screenTrackRef = useRef<HTMLVideoElement | null>(null);
   const [screenSharing, setScreenSharing] = useState<boolean>(false);
+  const screenPeerConnections = useRef(new Map());
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const [peerScreens, setPeerScreens] = useState(new Map());
 
   useEffect(() => {
-    const newSocket = io("https://3eba-124-253-101-212.ngrok-free.app", {
+    const newSocket = io("https://5b05-124-253-101-212.ngrok-free.app", {
       path: "/socket.io/",
       transports: ["websocket", "polling"],
       autoConnect: true,
@@ -171,12 +174,58 @@ const VideoConference = ({ userId }: { userId: string }) => {
       cleanupPeerConnection(leftUserId);
     });
 
+    // Add screen share specific handlers
+    socket.on("screen_offer", async (data) => {
+      console.log("Received screen offer from:", data.user_id);
+      try {
+        const pc = await createScreenPeerConnection(data.user_id);
+        await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        socket.emit("screen_answer", {
+          room_id: roomId,
+          user_id: userId,
+          target_user_id: data.user_id,
+          sdp: answer,
+        });
+      } catch (err) {
+        console.error("Error handling screen offer:", err);
+      }
+    });
+
+    socket.on("screen_answer", async (data) => {
+      console.log("Received screen answer from:", data.user_id);
+      try {
+        const pc = screenPeerConnections.current.get(data.user_id);
+        if (pc) {
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+        }
+      } catch (err) {
+        console.error("Error handling screen answer:", err);
+      }
+    });
+
+    socket.on("screen_ice_candidate", async (data) => {
+      try {
+        const pc = screenPeerConnections.current.get(data.user_id);
+        if (pc) {
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+      } catch (err) {
+        console.error("Error handling screen ICE candidate:", err);
+      }
+    });
+
     return () => {
       socket.off("user_joined");
       socket.off("offer");
       socket.off("answer");
       socket.off("ice-candidate");
       socket.off("user_left");
+      socket.off("screen_offer");
+      socket.off("screen_answer");
+      socket.off("screen_ice_candidate");
     };
   }, [socket, localStream, roomId, userId]);
 
@@ -245,8 +294,36 @@ const VideoConference = ({ userId }: { userId: string }) => {
     return pc;
   };
 
-  // Rest of the component remains the same...
-  // (keeping the toggleAudio, toggleVideo, and render methods unchanged)
+  const createScreenPeerConnection = async (peerId: string) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceCandidatePoolSize: 10,
+    });
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        socket?.emit("screen_ice_candidate", {
+          room_id: roomId,
+          user_id: userId,
+          target_user_id: peerId,
+          candidate: event.candidate,
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      console.log("Received screen track from:", peerId);
+      setPeerScreens(prev => {
+        const newScreens = new Map(prev);
+        newScreens.set(peerId, event.streams[0]);
+        return newScreens;
+      });
+    };
+
+    screenPeerConnections.current.set(peerId, pc);
+    return pc;
+  };
+
   const toggleAudio = () => {
     if (localStream) {
       localStream.getAudioTracks().forEach((track) => {
@@ -276,37 +353,35 @@ const VideoConference = ({ userId }: { userId: string }) => {
   const toggleScreenSharing = async () => {
     if (!screenSharing) {
       try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        const stream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
         });
 
-        const combinedStream = new MediaStream();
+        setScreenStream(stream);
 
-        // Add audio tracks if available
-        if (localStream) {
-          localStream
-            .getAudioTracks()
-            .forEach((track) => combinedStream.addTrack(track));
+        // Create separate peer connections for screen sharing
+        for (const [peerId] of peerConnections.current.entries()) {
+          const pc = await createScreenPeerConnection(peerId);
+
+          stream.getTracks().forEach((track) => {
+            pc.addTrack(track, stream);
+          });
+
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          socket?.emit("screen_offer", {
+            room_id: roomId,
+            user_id: userId,
+            target_user_id: peerId,
+            sdp: offer,
+          });
         }
 
-        screenStream
-          .getVideoTracks()
-          .forEach((track) => combinedStream.addTrack(track));
+        stream.getVideoTracks()[0].onended = () => {
+          stopScreenSharing();
+        };
 
-        screenTrackRef.current = screenStream.getVideoTracks()[0];
-
-        peerConnections.current.forEach((pc) => {
-          const sender = pc.getSenders().find((s) => s.track.kind === "video");
-          if (sender && screenTrackRef.current) {
-            sender.replaceTrack(screenTrackRef.current);
-          }
-        });
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = combinedStream;
-        }
-        if (!screenTrackRef.current) return
-        screenTrackRef.current.onended = () => stopScreenSharing();
         setScreenSharing(true);
       } catch (err) {
         console.error("Error starting screen share:", err);
@@ -317,26 +392,20 @@ const VideoConference = ({ userId }: { userId: string }) => {
   };
 
   const stopScreenSharing = () => {
-    if (screenTrackRef.current) {
-      screenTrackRef.current.stop();
+    if (screenStream) {
+      screenStream.getTracks().forEach(track => track.stop());
+
+      // Clean up screen peer connections
+      screenPeerConnections.current.forEach(pc => {
+        pc.close();
+      });
+      screenPeerConnections.current.clear();
+
+      setScreenStream(null);
+      setPeerScreens(new Map());
+      setScreenSharing(false);
     }
-
-    peerConnections.current.forEach((pc) => {
-      const sender = pc.getSenders().find((s) => s.track.kind === "video");
-      if (sender) {
-        const videoTrack = localStream?.getVideoTracks()[0]; // Handle missing video device
-        sender.replaceTrack(videoTrack || null); // If no video track, replace with null
-      }
-    });
-
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = localStream || new MediaStream();
-    }
-
-    setScreenSharing(false);
   };
-
-
 
   return (
     <div className="video-conference">
@@ -366,6 +435,43 @@ const VideoConference = ({ userId }: { userId: string }) => {
           </div>
         ))}
       </div>
+
+      {/* Separate grid for screen shares */}
+      {(screenSharing || peerScreens.size > 0) && (
+        <div className="screen-share-container">
+          {/* Local screen share */}
+          {screenSharing && screenStream && (
+            <div className="screen-container local-screen">
+              <video
+                autoPlay
+                playsInline
+                className="screen-stream"
+                ref={(el) => {
+                  if (el) el.srcObject = screenStream;
+                }}
+              />
+              <div className="screen-name">Your Screen</div>
+            </div>
+          )}
+
+          {/* Peer screen shares */}
+          <div className="peer-screens-grid">
+            {Array.from(peerScreens.entries()).map(([peerId, stream]) => (
+              <div key={`${peerId}_screen`} className="screen-container">
+                <video
+                  autoPlay
+                  playsInline
+                  className="screen-stream"
+                  ref={(el) => {
+                    if (el) el.srcObject = stream;
+                  }}
+                />
+                <div className="screen-name">{`${peerId}'s Screen`}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="controls">
         <button
@@ -471,6 +577,51 @@ const VideoConference = ({ userId }: { userId: string }) => {
 
         .control-button.disabled:hover {
           background: #bd2130;
+        }
+
+        .screen-share-container {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+          margin-top: 20px;
+          margin-bottom: 80px;
+        }
+
+        .local-screen {
+          width: 100%;
+          max-width: 1200px;
+          margin: 0 auto;
+        }
+
+        .peer-screens-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+          gap: 20px;
+        }
+
+        .screen-container {
+          position: relative;
+          aspect-ratio: 16/9;
+          background: #000;
+          border-radius: 8px;
+          overflow: hidden;
+        }
+
+        .screen-stream {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+
+        .screen-name {
+          position: absolute;
+          bottom: 10px;
+          left: 10px;
+          background: rgba(0, 0, 0, 0.5);
+          color: white;
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-size: 14px;
         }
       `}</style>
     </div>
