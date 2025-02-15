@@ -409,6 +409,42 @@ const VideoConference = ({ userId }: { userId: string }) => {
 
   return (
     <div className="video-conference">
+      {/* Any active screen shares - at top */}
+      {(screenSharing || peerScreens.size > 0) && (
+        <div className="active-screen-container">
+          {/* Local screen share */}
+          {screenSharing && screenStream && (
+            <div className="screen-container active-screen">
+              <video
+                autoPlay
+                playsInline
+                className="screen-stream"
+                ref={(el) => {
+                  if (el) el.srcObject = screenStream;
+                }}
+              />
+              <div className="screen-name">Your Screen</div>
+            </div>
+          )}
+
+          {/* Peer screen shares */}
+          {Array.from(peerScreens.entries()).map(([peerId, stream]) => (
+            <div key={`${peerId}_screen`} className="screen-container active-screen">
+              <video
+                autoPlay
+                playsInline
+                className="screen-stream"
+                ref={(el) => {
+                  if (el) el.srcObject = stream;
+                }}
+              />
+              <div className="screen-name">{`${peerId}'s Screen`}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Video grid */}
       <div className="video-grid">
         <div className="video-container">
           <video
@@ -435,43 +471,6 @@ const VideoConference = ({ userId }: { userId: string }) => {
           </div>
         ))}
       </div>
-
-      {/* Separate grid for screen shares */}
-      {(screenSharing || peerScreens.size > 0) && (
-        <div className="screen-share-container">
-          {/* Local screen share */}
-          {screenSharing && screenStream && (
-            <div className="screen-container local-screen">
-              <video
-                autoPlay
-                playsInline
-                className="screen-stream"
-                ref={(el) => {
-                  if (el) el.srcObject = screenStream;
-                }}
-              />
-              <div className="screen-name">Your Screen</div>
-            </div>
-          )}
-
-          {/* Peer screen shares */}
-          <div className="peer-screens-grid">
-            {Array.from(peerScreens.entries()).map(([peerId, stream]) => (
-              <div key={`${peerId}_screen`} className="screen-container">
-                <video
-                  autoPlay
-                  playsInline
-                  className="screen-stream"
-                  ref={(el) => {
-                    if (el) el.srcObject = stream;
-                  }}
-                />
-                <div className="screen-name">{`${peerId}'s Screen`}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div className="controls">
         <button
@@ -509,16 +508,32 @@ const VideoConference = ({ userId }: { userId: string }) => {
           height: 100vh;
           padding: 20px;
           background: #f0f0f0;
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+        }
+
+        .active-screen-container {
+          width: 100%;
+          display: flex;
+          justify-content: center;
+          margin-bottom: 20px;
+        }
+
+        .active-screen {
+          width: 100%;
+          max-width: 800px; /* Approximately double the width of video containers */
+          margin: 0 auto;
         }
 
         .video-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
           gap: 20px;
-          margin-bottom: 80px;
+          margin-bottom: 20px;
         }
 
-        .video-container {
+        .video-container, .screen-container {
           position: relative;
           aspect-ratio: 16/9;
           background: #000;
@@ -526,13 +541,13 @@ const VideoConference = ({ userId }: { userId: string }) => {
           overflow: hidden;
         }
 
-        .video-stream {
+        .video-stream, .screen-stream {
           width: 100%;
           height: 100%;
-          object-fit: cover;
+          object-fit: contain;
         }
 
-        .participant-name {
+        .participant-name, .screen-name {
           position: absolute;
           bottom: 10px;
           left: 10px;
@@ -577,51 +592,6 @@ const VideoConference = ({ userId }: { userId: string }) => {
 
         .control-button.disabled:hover {
           background: #bd2130;
-        }
-
-        .screen-share-container {
-          display: flex;
-          flex-direction: column;
-          gap: 20px;
-          margin-top: 20px;
-          margin-bottom: 80px;
-        }
-
-        .local-screen {
-          width: 100%;
-          max-width: 1200px;
-          margin: 0 auto;
-        }
-
-        .peer-screens-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-          gap: 20px;
-        }
-
-        .screen-container {
-          position: relative;
-          aspect-ratio: 16/9;
-          background: #000;
-          border-radius: 8px;
-          overflow: hidden;
-        }
-
-        .screen-stream {
-          width: 100%;
-          height: 100%;
-          object-fit: contain;
-        }
-
-        .screen-name {
-          position: absolute;
-          bottom: 10px;
-          left: 10px;
-          background: rgba(0, 0, 0, 0.5);
-          color: white;
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 14px;
         }
       `}</style>
     </div>
