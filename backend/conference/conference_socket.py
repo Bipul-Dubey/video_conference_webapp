@@ -57,6 +57,12 @@ class RoomManager:
     def get_screen_sharer(self, room_id: str) -> str | None:
         """Get the current screen-sharing user in a room."""
         return self.screen_sharing.get(room_id)
+    
+    def is_screen_sharing_active(self, room_id: str) -> bool:
+        return room_id in self.screen_sharing
+
+    def can_start_screen_sharing(self, room_id: str, user_id: str) -> bool:
+        return not self.is_screen_sharing_active(room_id) or self.screen_sharing[room_id] == user_id
 
 # Create global room manager instance
 room_manager = RoomManager()
@@ -178,6 +184,24 @@ async def handle_screen_offer(sid, data):
     print(f"📡 Screen Offer received from {data['user_id']} -> {data['target_user_id']}")
     
     room_id = data["room_id"]
+    user_id = data["user_id"]
+    
+    if not room_manager.can_start_screen_sharing(room_id, user_id):
+        await sio.emit("screen_sharing_error", {
+            "message": "Another user is already sharing their screen"
+        }, room=sid)
+        return
+    if not isinstance(data, dict):
+        print("🚨 Error: Screen offer data is not a dictionary!")
+        return
+
+    required_keys = ["user_id", "room_id", "target_user_id", "sdp"]
+    missing_keys = [key for key in required_keys if key not in data]
+
+    if missing_keys:
+        print(f"🚨 Missing keys in screen offer data: {missing_keys}")
+        return
+    
     target_sid = room_manager.get_participant_sid(room_id, data["target_user_id"])
     
     if target_sid:
@@ -206,3 +230,11 @@ async def handle_screen_share_stopped(sid, data):
     
     # Notify all users in the room
     await sio.emit("screen_share_stopped", {"room_id": room_id, "userId": data["user_id"]}, room=room_id)
+
+@sio.on("screen_ice_candidate")
+async def handle_screen_ice_candidate(sid, data):
+    print(f"❄️ Screen ICE Candidate received from {data['user_id']}")
+    
+    target_sid = room_manager.get_participant_sid(data["room_id"], data["target_user_id"])
+    if target_sid:
+        await sio.emit("screen_ice_candidate", data, room=target_sid)    
