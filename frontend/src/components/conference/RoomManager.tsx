@@ -24,7 +24,7 @@ const RoomManager = () => {
 
   return (
     <div className="room-container">
-      <h2>AI Interview Room</h2>
+      <h2>Interview Room</h2>
 
       <button onClick={createRoom} className="btn-primary">
         Create New Room
